@@ -93,38 +93,39 @@ class SpeedTest(
     // ---------------- الرفع ----------------
     private fun measureUpload(): Double {
         var best = 0.0
-        val chunk = ByteArray(1_000_000) // 1MB عشوائي يُعاد إرساله
+        val chunk = ByteArray(64 * 1024) // 64KB تُكتب تتابعياً
         val start = System.currentTimeMillis()
-        val rounds = 6
-        for (i in 0 until rounds) {
-            if (cancelled || System.currentTimeMillis() - start > 12_000) break
+        val maxMs = 9_000L
+        try {
+            val c = URL(UP).openConnection() as HttpsURLConnection
+            c.connectTimeout = 7000; c.readTimeout = 20000
+            c.requestMethod = "POST"
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/octet-stream")
+            // بث مقسّم (chunked) يفرض الكتابة الفعلية على الشبكة بدل التخزين المؤقت
+            c.setChunkedStreamingMode(0)
+            val t0 = System.nanoTime()
+            var total = 0L
             try {
-                val c = URL(UP).openConnection() as HttpsURLConnection
-                c.connectTimeout = 7000; c.readTimeout = 20000
-                c.requestMethod = "POST"
-                c.doOutput = true
-                c.setRequestProperty("Content-Type", "application/octet-stream")
-                val sendMb = 8
-                c.setFixedLengthStreamingMode(chunk.size.toLong() * sendMb)
-                val t0 = System.nanoTime()
-                var total = 0L
-                c.outputStream.use { os ->
-                    repeat(sendMb) {
-                        if (cancelled) return@repeat
-                        os.write(chunk); total += chunk.size
-                        os.flush()
-                        val sec = (System.nanoTime() - t0) / 1e9
-                        if (sec > 0.3) {
-                            val mbps = total * 8.0 / sec / 1e6
-                            if (mbps > best) best = mbps
-                            onProgress("upload", mbps, Math.min(99, ((i + 1) * 100 / rounds)))
-                        }
+                val os = c.outputStream
+                while (!cancelled && System.currentTimeMillis() - start < maxMs) {
+                    os.write(chunk); os.flush(); total += chunk.size
+                    val sec = (System.nanoTime() - t0) / 1e9
+                    if (sec > 0.4) {
+                        val mbps = total * 8.0 / sec / 1e6
+                        best = mbps // المعدل التراكمي الفعلي
+                        onProgress("upload", mbps, Math.min(99, (sec / maxMs.toDouble() * 1000 * 100).toInt()))
                     }
                 }
-                c.responseCode
-                c.disconnect()
+                os.close()
             } catch (e: Exception) {
+                // عند قطع الكتابة نحسب ما أُرسل فعلاً
+                val sec = (System.nanoTime() - t0) / 1e9
+                if (sec > 0.4 && total > 0) best = total * 8.0 / sec / 1e6
             }
+            try { c.responseCode } catch (e: Exception) {}
+            c.disconnect()
+        } catch (e: Exception) {
         }
         onProgress("upload", best, 100)
         return best

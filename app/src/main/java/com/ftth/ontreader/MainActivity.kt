@@ -1180,17 +1180,24 @@ class MainActivity : Activity() {
         val latch = CountDownLatch(1)
         val result = HashMap<String, String>()
         val base = "http://$host/"
+        // مسارات صفحة WAN المحتملة عبر الموديلات (SA1456C/K662d/غيرها)
+        val wanPaths = listOf(
+            "html/bbsp/wan/wan.asp",
+            "html/amp/wan/wan.asp",
+            "html/network/wan/wan.asp",
+            "html/bbsp/wancfg/wancfg.asp"
+        )
         ui.post {
             CookieManager.getInstance().setAcceptCookie(true)
             val wv = WebView(this)
             wv.settings.javaScriptEnabled = true
             wv.settings.domStorageEnabled = true
-            var stage = 0 // 0=login page, 1=navigated to wan, 2=done
+            var loggedIn = false
+            var pathIdx = -1
             fun finish() { if (latch.count == 0L) return; latch.countDown(); ui.post { try { wv.stopLoading(); wv.destroy() } catch (e: Exception) {} } }
             val readJs = """
                 (function(){
                   var tds=[...document.querySelectorAll('td')];
-                  // صف الاتصال = خلية نصّها قصير ويطابق اسم اتصال WAN (ليس رأس الجدول)
                   var row=tds.find(function(x){var t=(x.textContent||'').trim();return t.length<42 && /^\d+_.*VID/i.test(t);})
                         || tds.find(function(x){var t=(x.textContent||'').trim();return t.length<42 && (/_R_|_B_/i.test(t)) && !/Connection|Protocol/i.test(t);});
                   var name=row?row.textContent.trim():'';
@@ -1204,35 +1211,43 @@ class MainActivity : Activity() {
                 if(!u||!p)return 'x';u.value='${user.replace("'","\\'")}';p.value='${pass.replace("'","\\'")}';
                 if(typeof SubmitForm=='function'){SubmitForm();return 's';}return 'n';})();
             """.trimIndent()
+
+            fun readAndMaybeRetry(view: WebView) {
+                // اقرأ القيم؛ إن كان اسم المستخدم فارغاً جرّب المسار التالي
+                view.evaluateJavascript(readJs) { }
+                ui.postDelayed({
+                    view.evaluateJavascript(readJs) { json ->
+                        var u = ""
+                        try {
+                            val s = json.trim('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                            Regex(""""user":"([^"]*)"""").find(s)?.let { u = OntParser.decodeJs(it.groupValues[1]) }
+                            Regex(""""vlan":"([^"]*)"""").find(s)?.let { if (it.groupValues[1].isNotBlank()) result["vlan"] = it.groupValues[1] }
+                            Regex(""""mode":"([^"]*)"""").find(s)?.let { if (it.groupValues[1].isNotBlank()) result["mode"] = it.groupValues[1] }
+                            Regex(""""name":"([^"]*)"""").find(s)?.let { if (it.groupValues[1].isNotBlank()) result["conn"] = OntParser.decodeJs(it.groupValues[1]) }
+                        } catch (e: Exception) {}
+                        if (u.isNotBlank()) { result["user"] = u; finish() }
+                        else if (pathIdx < wanPaths.size - 1) { pathIdx++; view.loadUrl(base + wanPaths[pathIdx]) }
+                        else finish()
+                    }
+                }, 1200)
+            }
+
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
                     view.evaluateJavascript("(document.getElementById('txt_Password')?1:0)") { r ->
-                        if (r.trim('"') == "1") { view.evaluateJavascript(loginJs) {} }
-                        else if (stage == 0) { stage = 1; view.loadUrl(base + "html/bbsp/wan/wan.asp") }
-                        else if (stage == 1) {
-                            stage = 2
-                            ui.postDelayed({
-                                view.evaluateJavascript(readJs) { }
-                                ui.postDelayed({
-                                    view.evaluateJavascript(readJs) { json ->
-                                        try {
-                                            val s = json.trim('"').replace("\\\"", "\"").replace("\\\\", "\\")
-                                            Regex(""""user":"([^"]*)"""").find(s)?.let { result["user"] = OntParser.decodeJs(it.groupValues[1]) }
-                                            Regex(""""vlan":"([^"]*)"""").find(s)?.let { result["vlan"] = it.groupValues[1] }
-                                            Regex(""""mode":"([^"]*)"""").find(s)?.let { result["mode"] = it.groupValues[1] }
-                                            Regex(""""name":"([^"]*)"""").find(s)?.let { result["conn"] = OntParser.decodeJs(it.groupValues[1]) }
-                                        } catch (e: Exception) {}
-                                        finish()
-                                    }
-                                }, 1200)
-                            }, 900)
+                        if (r.trim('"') == "1") {
+                            view.evaluateJavascript(loginJs) {}
+                        } else if (!loggedIn) {
+                            loggedIn = true; pathIdx = 0; view.loadUrl(base + wanPaths[0])
+                        } else {
+                            readAndMaybeRetry(view)
                         }
                     }
                 }
             }
             wv.loadUrl(base)
         }
-        latch.await(30, TimeUnit.SECONDS)
+        latch.await(40, TimeUnit.SECONDS)
         return result
     }
 

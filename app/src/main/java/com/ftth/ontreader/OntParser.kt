@@ -283,9 +283,10 @@ object OntParser {
         r.model = r.model ?: findField(objs, Regex("(?i)modelname|devtype|model|productclass"), numeric = false)
         r.serial = r.serial ?: findField(objs, Regex("(?i)serial|^sn$"), numeric = false)
         r.software = r.software ?: findField(objs, Regex("(?i)softwarever|swver|software"), numeric = false)
-        r.uptime = r.uptime ?: findField(objs, Regex("(?i)uptime|runtime|runningtime"), numeric = false)
-            ?: findVar(html, "uptime")?.takeIf { it.toLongOrNull() != null && it != "0" }
+        r.uptime = r.uptime
+            ?: findVar(html, "sysuptime|deviceuptime|runningtime|runtime|devuptime|uptime")?.takeIf { it.toLongOrNull() != null && it != "0" }
             ?: uptimeFromSystemTime(html)
+            ?: findField(objs, Regex("(?i)uptime|runtime|runningtime"), numeric = false)?.takeIf { it != "0" }
         if (r.temperature == null) {
             r.temperature = findField(objs, Regex("(?i)temp")) ?: findVar(html, "temperature|temprature")
         }
