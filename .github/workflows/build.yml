@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,9 +23,20 @@ jobs:
           gradle-version: "8.7"
 
       - name: Build APK
-        run: gradle assembleRelease --no-daemon
+        run: |
+          gradle assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk HuaweiOntReader.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: HuaweiOntReader-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: HuaweiOntReader.apk
+
+      - name: Publish APK to Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest HuaweiOntReader.apk \
+            --title "قارئ ONT هواوي - آخر نسخة" \
+            --notes "نزّل ملف HuaweiOntReader.apk وثبّته على الهاتف. (بناء رقم ${{ github.run_number }})"
