@@ -28,10 +28,18 @@ data class PortInfo(
 
     val speedMbps: Int?
         get() {
-            val raw = speed ?: return null
-            val m = Regex("""(\d+(?:\.\d+)?)\s*(G|M)?""", RegexOption.IGNORE_CASE).find(raw) ?: return null
-            val n = m.groupValues[1].toDoubleOrNull() ?: return null
-            return if (m.groupValues[2].equals("G", true)) (n * 1000).toInt() else n.toInt()
+            val raw = speed?.trim() ?: return null
+            // قيمة بالـ bps (رقم كبير) → Mbps
+            Regex("""^\d{7,}$""").find(raw)?.let { return (it.value.toLong() / 1_000_000L).toInt() }
+            // رقم متبوع بوحدة G أو M
+            Regex("""(?i)(\d+(?:\.\d+)?)\s*(g|m)""").find(raw)?.let { m ->
+                val n = m.groupValues[1].toDouble()
+                return if (m.groupValues[2].equals("g", true)) (n * 1000).toInt() else n.toInt()
+            }
+            val n = raw.toIntOrNull() ?: Regex("""\d+""").find(raw)?.value?.toIntOrNull() ?: return null
+            // رقم ≥ 10 يعني أنها Mbps فعلية (10/100/1000/2500...)
+            // رقم 0..9 يعني رمز سرعة من هواوي: 0=10، 1=100، 2=1000، 3=2500، 4=10000
+            return if (n >= 10) n else intArrayOf(10, 100, 1000, 2500, 10000).getOrElse(n) { n }
         }
 
     /** GE / FE / ... */
@@ -212,6 +220,22 @@ object OntParser {
         r.bias = r.bias
             ?: findField(objs, Regex("(?i)bias|current"))
             ?: findVar(html, "bias")
+
+        // احتياطي لـ TX: داخل كائن الإشارة، اختر حقل قدرة بالـ dBm غير RX
+        if (r.txPower == null) {
+            val rxVal = r.rxPower
+            outer@ for (o in objs) {
+                if (o.fields.keys.none { Regex("(?i)optic|power|temp|volt|bias|signal|level").containsMatchIn(it) }) continue
+                for ((k, v) in o.fields) {
+                    if (Regex("(?i)rx|rev|recv|receiv|temp|volt|bias|current|domain|vendor|status|wave|dist|serial|mode").containsMatchIn(k)) continue
+                    if (!Regex("(?i)power|optic|level|tx|trans|send|launch|signal").containsMatchIn(k)) continue
+                    val c = clean(v) ?: continue
+                    if (c == rxVal) continue
+                    val d = c.toDoubleOrNull() ?: continue
+                    if (d in -50.0..20.0) { r.txPower = c; break@outer }
+                }
+            }
+        }
     }
 
     // ---------------- صفحة معلومات الجهاز ----------------

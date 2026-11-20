@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private val BAD = Color.parseColor("#EF4444")
     private val OFF = Color.parseColor("#475569")
 
+    private val REQ_SAVE = 7001
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var profiles: MutableList<Profile>
     private var selected = -1 // -1 = تلقائي
@@ -326,7 +327,7 @@ class MainActivity : Activity() {
             row.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
         }
         btn("{ }  البيانات الخام") { showDump() }
-        btn("↗  مشاركة للتشخيص") { shareDump() }
+        btn("💾  حفظ ملف للتشخيص") { saveDumpFile() }
         content.addView(row, mlp(10))
     }
 
@@ -735,6 +736,35 @@ class MainActivity : Activity() {
             putExtra(Intent.EXTRA_TEXT, lastDump.take(100000))
         }
         startActivity(Intent.createChooser(i, "مشاركة البيانات"))
+    }
+
+    /** يحفظ التشخيص الكامل كملف .txt عبر نافذة النظام (لا يُقطع مثل نص المشاركة) */
+    private fun saveDumpFile() {
+        if (lastDump.isBlank()) { Toast.makeText(this, "اضغط زر التحديث أولاً", Toast.LENGTH_SHORT).show(); return }
+        val stamp = SimpleDateFormat("MMdd_HHmm", Locale.US).format(Date())
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TITLE, "ont_diag_$stamp.txt")
+        }
+        try {
+            startActivityForResult(i, REQ_SAVE)
+        } catch (e: Exception) {
+            shareDump()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_SAVE && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(lastDump.toByteArray(Charsets.UTF_8)) }
+                Toast.makeText(this, "تم حفظ ملف التشخيص ✔", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "تعذر الحفظ: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     override fun onDestroy() {
