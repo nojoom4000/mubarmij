@@ -247,20 +247,22 @@ class HuaweiClient(
     /** إعادة تشغيل الجهاز. يرجع true عند إرسال الأمر (الاتصال سينقطع بعدها). */
     fun reboot(): Boolean {
         if (!loggedIn && !login()) throw Exception("فشل تسجيل الدخول.\n\n$log")
+        // المسار الدقيق المؤكد من جهاز هواوي حقيقي (EchoLife): زر Restart يستدعي Reboot()
+        // POST set.cgi?x=InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard&RequestFile=html/ssmp/reset/reset.asp
+        data class R(val page: String, val cgi: String, val obj: String)
         val candidates = listOf(
-            "/html/ssmp/reset/set.asp" to "/html/ssmp/reset/set.cgi",
-            "/html/ssmp/reboot/set.asp" to "/html/ssmp/reboot/set.cgi",
-            "/html/amp/reboot/set.asp" to "/html/amp/reboot/set.cgi",
-            "/html/ssmp/accountmgr/reset.asp" to "/html/ssmp/reset/set.cgi"
+            R("/html/ssmp/reset/reset.asp", "/html/ssmp/reset/set.cgi", "InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard"),
+            R("/html/ssmp/reset/set.asp", "/html/ssmp/reset/set.cgi", "InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard"),
+            R("/html/ssmp/reboot/reboot.asp", "/html/ssmp/reboot/set.cgi", "InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard")
         )
-        for ((page, cgi) in candidates) {
-            val g = try { request(page) } catch (e: Exception) { log.append("reboot: تعذر فتح $page: ${e.message}\n"); continue }
+        for (c in candidates) {
+            val g = try { request(c.page) } catch (e: Exception) { log.append("reboot: تعذر فتح ${c.page}: ${e.message}\n"); continue }
             if (g.code != 200 || isLoginPage(g.body)) continue
             val tok = tokenOf(g.body) ?: token ?: ""
-            val form = "x.X_HW_Token=${enc(tok)}&RebootType=0"
-            log.append("إرسال إعادة التشغيل عبر $cgi\n")
+            val url = "${c.cgi}?x=${enc(c.obj)}&RequestFile=${enc("html/ssmp/reset/reset.asp")}"
+            log.append("إرسال إعادة التشغيل عبر ${c.cgi}\n")
             return try {
-                val r = request("$cgi?RequestFile=${page.removePrefix("/")}", "POST", form)
+                val r = request(url, "POST", "x.X_HW_Token=${enc(tok)}")
                 log.append("reboot: HTTP ${r.code}\n")
                 loggedIn = false
                 true
