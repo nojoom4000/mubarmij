@@ -72,7 +72,32 @@ data class OntReading(
     var serial: String? = null,
     var software: String? = null,
     var uptime: String? = null,
+    var ponSupport: String? = null, // GPON / EPON / GPON/EPON
+    var ponMode: String? = null,    // النمط الحالي: gpon / epon / ge
+    var ponStatus: String? = null,  // حالة التسجيل: O5 / ONLINE ...
     var ports: List<PortInfo> = emptyList()
+)
+
+/** جهاز متصل بالشبكة المحلية */
+data class ClientDevice(
+    val host: String?,   // اسم الجهاز
+    val ip: String?,
+    val mac: String?,
+    val port: String?,   // LAN1 / SSID...
+    val status: String?, // Online/Offline
+    val conn: String?    // ETH سلكي / WLAN لاسلكي
+) {
+    val online: Boolean get() = (status ?: "").contains("online", true) || status == "1"
+    val isWireless: Boolean get() = (conn ?: "").contains("wlan", true) || (conn ?: "").contains("wifi", true) || (port ?: "").contains("SSID", true)
+}
+
+/** اتصال WAN واحد */
+data class WanConn(
+    val name: String?,
+    val mode: String?,    // Route / Bridge
+    val vlan: String?,
+    val protocol: String?,
+    val user: String?
 )
 
 object OntParser {
@@ -263,6 +288,58 @@ object OntParser {
         if (r.temperature == null) {
             r.temperature = findField(objs, Regex("(?i)temp")) ?: findVar(html, "temperature|temprature")
         }
+        // نوع دعم PON من الوصف: "GPON/EPON Terminal" / "GPON Terminal" / "EPON Terminal"
+        val desc = findField(objs, Regex("(?i)description|manufactureinfo|devtype"), numeric = false) ?: html
+        val g = Regex("(?i)gpon").containsMatchIn(desc)
+        val e = Regex("(?i)epon").containsMatchIn(desc)
+        r.ponSupport = r.ponSupport ?: when {
+            g && e -> "GPON/EPON"
+            g -> "GPON"
+            e -> "EPON"
+            else -> null
+        }
+        // النمط الحالي وحالة التسجيل
+        r.ponMode = r.ponMode ?: Regex("""(?i)ontPonMode\s*=\s*['"](\w+)['"]""").find(html)?.groupValues?.get(1)
+        r.ponStatus = r.ponStatus
+            ?: Regex("""(?i)['"](O[1-7]|ONLINE|OFFLINE)['"]""").find(html)?.groupValues?.get(1)
+    }
+
+    // ---------------- الأجهزة المتصلة ----------------
+    fun parseDevices(html: String): List<ClientDevice> {
+        val objs = extractObjects(html)
+        val out = ArrayList<ClientDevice>()
+        for (o in objs) {
+            // كائن جهاز متصل: يحوي IpAddr و MacAddr
+            val keys = o.fields.keys.map { it.lowercase() }
+            val hasIp = keys.any { it.contains("ip") && it.contains("addr") } || o.fields.values.any { Regex("""\d+\.\d+\.\d+\.\d+""").containsMatchIn(clean(it) ?: "") }
+            val hasMac = keys.any { it.contains("mac") } || o.fields.values.any { Regex("""(?i)([0-9a-f]{2}[:\-]){5}[0-9a-f]{2}""").containsMatchIn(clean(it) ?: "") }
+            if (!hasIp || !hasMac) continue
+            fun v(vararg names: String): String? { for (n in names) for ((k, vv) in o.fields) if (k.contains(n, true)) { val c = clean(vv); if (c != null && !isBlank(c)) return c }; return null }
+            val ip = v("ipaddr", "ipaddress") ?: o.fields.values.mapNotNull { clean(it) }.firstOrNull { Regex("""^\d+\.\d+\.\d+\.\d+$""").matches(it) }
+            val mac = v("macaddr", "mac") ?: o.fields.values.mapNotNull { clean(it) }.firstOrNull { Regex("""(?i)^([0-9a-f]{2}[:\-]){5}[0-9a-f]{2}$""").matches(it) }
+            out.add(ClientDevice(host = v("hostname", "name"), ip = ip, mac = mac, port = v("port"), status = v("devstatus", "status"), conn = v("porttype", "conntype", "type")))
+        }
+        return out
+    }
+
+    // ---------------- قائمة WAN ----------------
+    fun parseWanList(html: String): List<WanConn> {
+        val out = ArrayList<WanConn>()
+        // أسماء الاتصالات مثل 1_INTERNET_R_VID_20 تكشف الوضع والفيلان
+        val objs = extractObjects(html)
+        for (o in objs) {
+            fun v(vararg names: String): String? { for (n in names) for ((k, vv) in o.fields) if (k.contains(n, true)) { val c = clean(vv); if (c != null && !isBlank(c)) return c }; return null }
+            val name = v("connname", "name", "cwmp") ?: continue
+            if (!Regex("(?i)INTERNET|VID|_R_|_B_|TR069|VOIP|IPTV").containsMatchIn(name)) continue
+            val mode = when {
+                v("wanmode")?.contains("brid", true) == true || name.contains("_B_") || name.contains("_B") -> "Bridge"
+                v("wanmode")?.contains("rout", true) == true || name.contains("_R_") || name.contains("_R") -> "Route"
+                else -> v("wanmode")
+            }
+            val vlan = v("vlanid", "vlan") ?: Regex("(?i)VID_?(\\d+)").find(name)?.groupValues?.get(1)
+            out.add(WanConn(name, mode, vlan, v("protocol", "ipmode"), v("username", "user")))
+        }
+        return out
     }
 
     // ---------------- صفحة المنافذ ----------------

@@ -49,9 +49,29 @@ class MainActivity : Activity() {
     private var selected = -1 // -1 = تلقائي
 
     // عناصر الواجهة
+    private lateinit var topBar: LinearLayout
+    private lateinit var pageHost: FrameLayout
+    private val pages = ArrayList<ScrollView>()
+    private lateinit var tabRow: LinearLayout
+    private val tabViews = ArrayList<TextView>()
+    private var currentTab = 0
+    private var devicesLoadedOnce = false
     private lateinit var content: LinearLayout
     private lateinit var chipsRow: LinearLayout
     private lateinit var autoChip: TextView
+    // صفحات إضافية
+    private lateinit var ponCard: LinearLayout
+    private lateinit var tvPon: TextView
+    private lateinit var tvPonSub: TextView
+    private lateinit var devicesBox: LinearLayout
+    private lateinit var tvDevicesCount: TextView
+    private lateinit var speedBox: LinearLayout
+    private lateinit var tvPing: TextView
+    private lateinit var tvDown: TextView
+    private lateinit var tvUp: TextView
+    private lateinit var btnSpeed: TextView
+    private var speedTest: SpeedTest? = null
+    @Volatile private var speedRunning = false
     private lateinit var statusDot: View
     private lateinit var tvStatus: TextView
     private lateinit var tvSub: TextView
@@ -127,31 +147,57 @@ class MainActivity : Activity() {
         selected = getSharedPreferences("cfg", MODE_PRIVATE).getInt("sel", -1).let { if (it >= profiles.size) -1 else it }
 
         val frame = FrameLayout(this).apply { setBackgroundColor(BG) }
-        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
-        content = LinearLayout(this).apply {
+        val outer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        frame.addView(outer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // الشريط العلوي الثابت: العنوان + الملفات + التبويبات
+        topBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(18), dp(16), dp(110))
+            setPadding(dp(16), dp(16), dp(16), dp(4))
         }
-        scroll.addView(content)
-        frame.addView(scroll)
-        setContentView(frame)
+        outer.addView(topBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         buildHeader()
         buildProfiles()
+        buildTabBar()
+
+        // مضيف الصفحات
+        pageHost = FrameLayout(this)
+        outer.addView(pageHost, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        // صفحة الحالة (التبويب الأول)
+        content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(110))
+        }
+        pages.add(wrapScroll(content))
+        buildStatusTop()
         buildGauge()
         buildTiles()
         buildPorts()
         buildDevice()
         buildError()
         buildFooter()
+
+        // باقي التبويبات
+        pages.add(wrapScroll(buildWanPage()))
+        pages.add(wrapScroll(buildWifiPage()))
+        pages.add(wrapScroll(buildDevicesPage()))
+        pages.add(wrapScroll(buildSpeedPage()))
+        pages.forEachIndexed { i, p -> pageHost.addView(p); p.visibility = if (i == 0) View.VISIBLE else View.GONE }
+
         buildFab(frame)
+        selectTab(0)
     }
+
+    private fun wrapScroll(child: View): ScrollView =
+        ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(child) }
 
     private fun buildHeader() {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(tv("ONT Reader", 26f, TEXT, true))
-        tvSub = tv("فحص أجهزة الفايبر بلمسة", 13f, MUTED)
+        tvSub = tv("مكتب المبرمج لخدمات الإنترنت", 13f, MUTED)
         col.addView(tvSub)
         row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
@@ -165,30 +211,46 @@ class MainActivity : Activity() {
         tvStatus = tv("غير متصل", 12f, MUTED, true)
         pill.addView(tvStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(7) })
         row.addView(pill)
-        content.addView(row)
+        topBar.addView(row)
     }
 
     private fun buildProfiles() {
         val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         chipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         hs.addView(chipsRow)
-        content.addView(hs, mlp(18))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        row.addView(tv("اضغط مطولاً على أي ملف لتعديله", 11f, MUTED), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        autoChip = chip("⟳ تحديث تلقائي", false)
-        autoChip.setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            autoOn = !autoOn
-            styleChip(autoChip, autoOn)
-            ui.removeCallbacks(autoRunnable)
-            if (autoOn) {
-                ui.post(autoRunnable)
-                Toast.makeText(this, "تحديث كل 15 ثانية", Toast.LENGTH_SHORT).show()
-            }
-        }
-        row.addView(autoChip)
-        content.addView(row, mlp(8))
+        topBar.addView(hs, mlp(14))
         renderChips()
+    }
+
+    // ---------------- شريط التبويبات ----------------
+    private fun buildTabBar() {
+        val titles = listOf("الحالة", "WAN", "WiFi", "الأجهزة", "السرعة")
+        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        titles.forEachIndexed { i, t ->
+            val tab = tv(t, 14f, MUTED, true).apply {
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); selectTab(i) }
+            }
+            tabRow.addView(tab, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
+            tabViews.add(tab)
+        }
+        hs.addView(tabRow)
+        topBar.addView(hs, mlp(10))
+    }
+
+    private fun selectTab(i: Int) {
+        currentTab = i
+        tabViews.forEachIndexed { idx, v ->
+            val on = idx == i
+            v.background = if (on) gradient(16, ACCENT, ACCENT2) else rounded(CARD2, 16, Color.parseColor("#2A3850"))
+            v.setTextColor(if (on) Color.parseColor("#0B1220") else TEXT)
+        }
+        pages.forEachIndexed { idx, p -> p.visibility = if (idx == i) View.VISIBLE else View.GONE }
+        autoChip.visibility = if (i == 0) View.VISIBLE else View.GONE
+        // أول تحميل كسول للأجهزة
+        if (i == 3 && devicesLoadedOnce.not()) { devicesLoadedOnce = true; loadDevices() }
+        updateFab()
     }
 
     private fun chip(text: String, on: Boolean): TextView = tv(text, 13f, TEXT, true).apply {
@@ -221,6 +283,190 @@ class MainActivity : Activity() {
         renderChips()
         val msg = if (i == -1) "كشف تلقائي لنوع الجهاز" else "${profiles[i].name} • ${profiles[i].host}"
         tvSub.text = msg
+    }
+
+    private fun buildStatusTop() {
+        // صف التحديث التلقائي
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(tv("اضغط مطولاً على ملف لتعديله", 11f, MUTED), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        autoChip = chip("⟳ تحديث تلقائي", false)
+        autoChip.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            autoOn = !autoOn
+            styleChip(autoChip, autoOn)
+            ui.removeCallbacks(autoRunnable)
+            if (autoOn) { ui.post(autoRunnable); Toast.makeText(this, "تحديث كل 15 ثانية", Toast.LENGTH_SHORT).show() }
+        }
+        row.addView(autoChip)
+        content.addView(row, mlp(4))
+
+        // بطاقة نوع الشبكة PON
+        ponCard = card().apply { setPadding(dp(14), dp(12), dp(14), dp(14)) }
+        ponCard.addView(tv("🌐  نوع الشبكة (PON)", 12f, MUTED))
+        tvPon = tv("--", 22f, TEXT, true).apply { textDirection = View.TEXT_DIRECTION_LTR }
+        ponCard.addView(tvPon, mlp(4))
+        tvPonSub = tv(" ", 11f, MUTED)
+        ponCard.addView(tvPonSub)
+        content.addView(ponCard, mlp(10))
+        animCards.add(ponCard)
+    }
+
+    // ---------------- تبويب WAN ----------------
+    private fun buildWanPage(): LinearLayout {
+        val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(10), dp(16), dp(110)) }
+        val box = card()
+        cardTitle(box, "🔌", "إعدادات WAN")
+        box.addView(tv("يفتح صفحة WAN الأصلية من الجهاز داخل التطبيق: تشوف نوع الاتصال (Route/Bridge)، وتعدّل الفيلان واسم المستخدم وكلمة المرور، وتحفظ.", 13f, MUTED), mlp(2))
+        box.addView(pageButton("فتح إعدادات WAN", "/html/bbsp/wan/wan.asp", "إعدادات WAN"), mlp(14))
+        box.addView(tv("⚠ تغيير WAN قد يقطع خدمة الزبون — تأكد من القيم قبل الحفظ.", 11f, WARN), mlp(10))
+        c.addView(box, mlp(4))
+        return c
+    }
+
+    // ---------------- تبويب WiFi ----------------
+    private fun buildWifiPage(): LinearLayout {
+        val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(10), dp(16), dp(110)) }
+        val box = card()
+        cardTitle(box, "📶", "إعدادات WiFi")
+        box.addView(tv("يفتح صفحة الواي فاي الأصلية: تغيّر اسم الشبكة SSID وكلمة المرور.", 13f, MUTED), mlp(2))
+        box.addView(pageButton("فتح إعدادات WiFi (SSID وكلمة المرور)", "/html/amp/wlanbasic/WlanBasic.asp", "WiFi — SSID وكلمة المرور"), mlp(12))
+        box.addView(tv("لتغيير القناة:", 12f, MUTED), mlp(12))
+        box.addView(pageButton("فتح إعدادات القناة (Channel)", "/html/amp/wlanadv/WlanAdvance.asp", "WiFi — القناة"), mlp(6))
+        box.addView(tv("⚠ تغيير إعدادات الواي فاي يقطع الاتصال اللاسلكي لحظياً.", 11f, WARN), mlp(10))
+        c.addView(box, mlp(4))
+        return c
+    }
+
+    private fun pageButton(label: String, path: String, title: String): TextView =
+        tv(label, 15f, Color.parseColor("#0B1220"), true).apply {
+            gravity = Gravity.CENTER
+            background = gradient(14, ACCENT, ACCENT2)
+            setPadding(dp(10), dp(14), dp(10), dp(14))
+            setOnClickListener { openDevicePage(path, title) }
+        }
+
+    private fun openDevicePage(path: String, title: String) {
+        val p = clientProfile ?: if (selected in profiles.indices) profiles[selected] else profiles.firstOrNull()
+        if (p == null) { Toast.makeText(this, "أضف ملف جهاز أولاً", Toast.LENGTH_SHORT).show(); return }
+        val i = Intent(this, DevicePageActivity::class.java)
+        i.putExtra("host", p.host); i.putExtra("user", p.user); i.putExtra("pass", p.pass)
+        i.putExtra("target", path); i.putExtra("title", title)
+        startActivity(i)
+    }
+
+    // ---------------- تبويب الأجهزة المتصلة ----------------
+    private fun buildDevicesPage(): LinearLayout {
+        val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(10), dp(16), dp(110)) }
+        val head = card().apply { setPadding(dp(14), dp(12), dp(14), dp(12)) }
+        head.addView(tv("🖥  الأجهزة المتصلة", 12f, MUTED))
+        tvDevicesCount = tv("--", 24f, ACCENT, true)
+        head.addView(tvDevicesCount, mlp(2))
+        head.addView(tv("اضغط زر التحديث لعرض الأجهزة", 11f, MUTED))
+        c.addView(head, mlp(4))
+        devicesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        c.addView(devicesBox)
+        return c
+    }
+
+    private fun loadDevices() {
+        if (busy) return
+        setBusy(true)
+        tvDevicesCount.text = "..."
+        val p = clientProfile ?: if (selected in profiles.indices) profiles[selected] else profiles.firstOrNull()
+        Thread {
+            try {
+                Net.bindWifi(this)
+                val c = client?.takeIf { clientProfile == p } ?: HuaweiClient(p!!.host, p.user, p.pass) { h, u, pw -> webLogin(h, u, pw) }
+                val list = c.fetchDevices()
+                client = c; clientProfile = p; lastDump = c.dump()
+                ui.post { showDevices(list) }
+            } catch (e: Exception) {
+                ui.post { tvDevicesCount.text = "--"; devicesBox.removeAllViews(); devicesBox.addView(tv(friendly(e, p?.host), 13f, BAD)) }
+            } finally { ui.post { setBusy(false) } }
+        }.start()
+    }
+
+    private fun showDevices(list: List<ClientDevice>) {
+        tvDevicesCount.text = "${list.size} جهاز"
+        devicesBox.removeAllViews()
+        if (list.isEmpty()) { devicesBox.addView(tv("لا توجد أجهزة متصلة حالياً", 13f, MUTED), mlp(10)); return }
+        for (d in list) {
+            val box = card().apply { setPadding(dp(14), dp(12), dp(14), dp(12)) }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(tv(if (d.isWireless) "📶" else "🔌", 18f, TEXT), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(10) })
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(tv(d.host?.takeIf { it.isNotBlank() } ?: "جهاز غير معروف", 15f, TEXT, true))
+            col.addView(tv("IP: ${d.ip ?: "--"}", 12f, MUTED).apply { textDirection = View.TEXT_DIRECTION_LTR })
+            col.addView(tv("MAC: ${d.mac ?: "--"}", 12f, MUTED).apply { textDirection = View.TEXT_DIRECTION_LTR })
+            row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val dot = if (d.online) GOOD else OFF
+            col.addView(tv(listOfNotNull(d.port, if (d.online) "متصل" else "غير متصل").joinToString(" • "), 11f, dot, true))
+            box.addView(row)
+            devicesBox.addView(box, mlp(8))
+        }
+    }
+
+    // ---------------- تبويب قياس السرعة ----------------
+    private fun buildSpeedPage(): LinearLayout {
+        val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(10), dp(16), dp(110)) }
+        speedBox = card()
+        cardTitle(speedBox, "⚡", "قياس سرعة الإنترنت")
+        speedBox.addView(tv("يقيس سرعة الإنترنت عبر واي فاي الجهاز (خط الزبون). يتطلب أن يكون الجهاز موصولاً بالإنترنت.", 12f, MUTED), mlp(2))
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun metric(label: String, color: Int): TextView {
+            val b = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; background = rounded(CARD2, 14); setPadding(dp(6), dp(14), dp(6), dp(14)) }
+            val v = tv("--", 20f, color, true).apply { gravity = Gravity.CENTER; textDirection = View.TEXT_DIRECTION_LTR }
+            b.addView(v); b.addView(tv(label, 11f, MUTED).apply { gravity = Gravity.CENTER })
+            grid.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+            return v
+        }
+        tvPing = metric("Ping (ms)", ACCENT2)
+        tvDown = metric("تحميل (Mbps)", GOOD)
+        tvUp = metric("رفع (Mbps)", ACCENT)
+        speedBox.addView(grid, mlp(14))
+        btnSpeed = tv("ابدأ القياس", 16f, Color.parseColor("#0B1220"), true).apply {
+            gravity = Gravity.CENTER; background = gradient(14, ACCENT, ACCENT2); setPadding(dp(10), dp(14), dp(10), dp(14))
+            setOnClickListener { toggleSpeed() }
+        }
+        speedBox.addView(btnSpeed, mlp(14))
+        c.addView(speedBox, mlp(4))
+        return c
+    }
+
+    private fun toggleSpeed() {
+        if (speedRunning) { speedTest?.cancelled = true; return }
+        speedRunning = true
+        btnSpeed.text = "إيقاف"
+        tvPing.text = "--"; tvDown.text = "--"; tvUp.text = "--"
+        val st = SpeedTest { phase, mbps, _ ->
+            ui.post {
+                when (phase) {
+                    "download" -> tvDown.text = String.format(Locale.US, "%.1f", mbps)
+                    "upload" -> tvUp.text = String.format(Locale.US, "%.1f", mbps)
+                }
+            }
+        }
+        speedTest = st
+        Thread {
+            Net.bindWifi(this)
+            try {
+                val r = st.run()
+                ui.post {
+                    tvPing.text = String.format(Locale.US, "%.0f", r.pingMs)
+                    tvDown.text = String.format(Locale.US, "%.1f", r.downMbps)
+                    tvUp.text = String.format(Locale.US, "%.1f", r.upMbps)
+                }
+            } catch (e: Exception) {
+                ui.post { Toast.makeText(this, "تعذّر القياس: ${e.message}", Toast.LENGTH_LONG).show() }
+            } finally {
+                ui.post { speedRunning = false; btnSpeed.text = "ابدأ القياس" }
+            }
+        }.start()
+    }
+
+    private fun updateFab() {
+        // زر التحديث العائم يظهر في الحالة والأجهزة فقط
+        if (::fab.isInitialized) fab.visibility = if (currentTab == 0 || currentTab == 3) View.VISIBLE else View.GONE
     }
 
     private fun buildGauge() {
@@ -349,7 +595,11 @@ class MainActivity : Activity() {
                 it.animate().scaleX(0.88f).scaleY(0.88f).setDuration(90).withEndAction {
                     it.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
                 }.start()
-                readNow()
+                when (currentTab) {
+                    0 -> readNow()
+                    3 -> loadDevices()
+                    else -> readNow()
+                }
             }
         }
         frame.addView(fab, FrameLayout.LayoutParams(dp(66), dp(66)).apply {
@@ -394,6 +644,21 @@ class MainActivity : Activity() {
     private fun show(r: OntReading, p: Profile) {
         errorCard.visibility = View.GONE
         setConnected(true, p)
+
+        // نوع الشبكة PON
+        val sup = r.ponSupport
+        tvPon.text = when (sup) {
+            "GPON/EPON" -> "GPON / EPON"
+            "GPON" -> "GPON فقط"
+            "EPON" -> "EPON فقط"
+            else -> "--"
+        }
+        val modeTxt = r.ponMode?.uppercase()?.let { m -> if (m == "GE") "إيثرنت" else m }
+        tvPonSub.text = listOfNotNull(
+            if (sup == "GPON/EPON") "يدعم الوضعين" else if (sup != null) "نوع واحد" else "غير متوفر",
+            modeTxt?.let { "النمط الحالي: $it" },
+            r.ponStatus?.let { "التسجيل: $it" }
+        ).joinToString("  •  ")
 
         // الإشارة
         val rx = num(r.rxPower)

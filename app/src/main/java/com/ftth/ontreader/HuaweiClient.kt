@@ -204,6 +204,30 @@ class HuaweiClient(
         return OntParser.parseAll(pages)
     }
 
+    /** جلب الأجهزة المتصلة عبر GetLanUserDevInfo.asp (POST بالتوكن) */
+    fun fetchDevices(): List<ClientDevice> {
+        if (!loggedIn && !login()) throw Exception("فشل تسجيل الدخول.\n\n$log")
+        val paths = listOf(
+            "/html/bbsp/common/GetLanUserDevInfo.asp",
+            "/html/amp/common/GetLanUserDevInfo.asp",
+            "/html/bbsp/userdevinfo/userdevinfo.asp"
+        )
+        for (p in paths) {
+            try {
+                val t = token ?: ""
+                val r = request(p, "POST", "x.X_HW_Token=${enc(t)}")
+                if (r.code == 200 && !isLoginPage(r.body)) {
+                    val list = OntParser.parseDevices(r.body)
+                    if (list.isNotEmpty()) { rawPages["devices"] = r.body; return list }
+                    if (r.body.contains("USERDevice", true) || r.body.contains("new Array", true)) return list
+                }
+            } catch (e: Exception) {
+                log.append("devices $p: ${e.message}\n")
+            }
+        }
+        return emptyList()
+    }
+
     fun logout() {
         if (!loggedIn) return
         try {
