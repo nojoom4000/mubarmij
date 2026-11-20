@@ -329,6 +329,14 @@ class MainActivity : Activity() {
         btn("{ }  البيانات الخام") { showDump() }
         btn("💾  حفظ ملف للتشخيص") { saveDumpFile() }
         content.addView(row, mlp(10))
+
+        val reboot = tv("⟲  إعادة تشغيل الجهاز", 14f, Color.parseColor("#FCA5A5"), true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(Color.parseColor("#2A1416"), 14, BAD)
+            setPadding(dp(8), dp(13), dp(8), dp(13))
+            setOnClickListener { confirmReboot() }
+        }
+        content.addView(reboot, mlp(10))
     }
 
     private fun buildFab(frame: FrameLayout) {
@@ -736,6 +744,56 @@ class MainActivity : Activity() {
             putExtra(Intent.EXTRA_TEXT, lastDump.take(100000))
         }
         startActivity(Intent.createChooser(i, "مشاركة البيانات"))
+    }
+
+    // ---------------- إعادة التشغيل ----------------
+    private fun confirmReboot() {
+        val sel = selected
+        // نحدد الجهاز الهدف: الجلسة الحالية إن وُجدت، وإلا ملف محدد
+        val target: Profile? = clientProfile ?: if (sel >= 0 && sel < profiles.size) profiles[sel] else null
+        if (target == null && sel == -1) {
+            Toast.makeText(this, "اختر ملف الجهاز أو اقرأ الجهاز أولاً", Toast.LENGTH_LONG).show()
+            return
+        }
+        val p = target!!
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("إعادة تشغيل الجهاز")
+            .setMessage("سيُعاد تشغيل «${p.name}» (${p.host}).\nسينقطع الإنترنت عن كل المشتركين على هذا الجهاز لمدة دقيقة تقريباً.\n\nهل أنت متأكد؟")
+            .setPositiveButton("نعم، أعد التشغيل") { _, _ -> doReboot(p) }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun doReboot(p: Profile) {
+        if (busy) return
+        setBusy(true)
+        tvUpdated.text = "جاري إرسال أمر إعادة التشغيل..."
+        Thread {
+            try {
+                Net.bindWifi(this)
+                val c = client?.takeIf { clientProfile == p }
+                    ?: HuaweiClient(p.host, p.user, p.pass) { h, u, pw -> webLogin(h, u, pw) }
+                c.reboot()
+                client = null
+                ui.post {
+                    autoOn = false
+                    styleChip(autoChip, false)
+                    ui.removeCallbacks(autoRunnable)
+                    setConnected(false, null)
+                    tvUpdated.text = "تم إرسال أمر إعادة التشغيل ✔"
+                    AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle("تمت العملية")
+                        .setMessage("أُرسل أمر إعادة التشغيل إلى «${p.name}».\nانتظر حتى تستقر أنوار الجهاز (حوالي دقيقة) ثم اضغط زر التحديث.")
+                        .setPositiveButton("حسناً", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                val msg = friendly(e, p.host)
+                ui.post { showError(msg) }
+            } finally {
+                ui.post { setBusy(false) }
+            }
+        }.start()
     }
 
     /** يحفظ التشخيص الكامل كملف .txt عبر نافذة النظام (لا يُقطع مثل نص المشاركة) */

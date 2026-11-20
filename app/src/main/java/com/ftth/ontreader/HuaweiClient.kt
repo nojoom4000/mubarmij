@@ -215,6 +215,41 @@ class HuaweiClient(
         cookies.clear()
     }
 
+    /** يقرأ توكن من صفحة معيّنة */
+    private fun tokenOf(body: String): String? =
+        Regex("""(?:hwonttoken|onttoken|X_HW_Token)["']?\s+value=["']([^"']+)""").find(body)?.groupValues?.get(1)
+            ?: Regex("""value=["']([^"']+)["'][^>]*id=["']?hwonttoken""").find(body)?.groupValues?.get(1)
+
+    /** إعادة تشغيل الجهاز. يرجع true عند إرسال الأمر (الاتصال سينقطع بعدها). */
+    fun reboot(): Boolean {
+        if (!loggedIn && !login()) throw Exception("فشل تسجيل الدخول.\n\n$log")
+        val candidates = listOf(
+            "/html/ssmp/reset/set.asp" to "/html/ssmp/reset/set.cgi",
+            "/html/ssmp/reboot/set.asp" to "/html/ssmp/reboot/set.cgi",
+            "/html/amp/reboot/set.asp" to "/html/amp/reboot/set.cgi",
+            "/html/ssmp/accountmgr/reset.asp" to "/html/ssmp/reset/set.cgi"
+        )
+        for ((page, cgi) in candidates) {
+            val g = try { request(page) } catch (e: Exception) { log.append("reboot: تعذر فتح $page: ${e.message}\n"); continue }
+            if (g.code != 200 || isLoginPage(g.body)) continue
+            val tok = tokenOf(g.body) ?: token ?: ""
+            val form = "x.X_HW_Token=${enc(tok)}&RebootType=0"
+            log.append("إرسال إعادة التشغيل عبر $cgi\n")
+            return try {
+                val r = request("$cgi?RequestFile=${page.removePrefix("/")}", "POST", form)
+                log.append("reboot: HTTP ${r.code}\n")
+                loggedIn = false
+                true
+            } catch (e: Exception) {
+                // قطع الاتصال بعد الإرسال مؤشر على بدء إعادة التشغيل
+                log.append("reboot: انقطع الاتصال (${e.message}) — بدأت إعادة التشغيل غالباً\n")
+                loggedIn = false
+                true
+            }
+        }
+        throw Exception("لم يتم العثور على صفحة إعادة التشغيل في هذا الموديل.\n\n$log")
+    }
+
     fun dump(): String {
         val sb = StringBuilder()
         sb.append("=== LOG ===\n").append(log).append("\n")
