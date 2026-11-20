@@ -72,6 +72,8 @@ class MainActivity : Activity() {
     private lateinit var btnSpeed: TextView
     private var speedTest: SpeedTest? = null
     @Volatile private var speedRunning = false
+    private var lastReading: OntReading? = null
+    private val WA_GROUP = "https://chat.whatsapp.com/CgADoA0lEnV6163Bi6JtPO?s=cl&p=a&iam=2"
     private lateinit var statusDot: View
     private lateinit var tvStatus: TextView
     private lateinit var tvSub: TextView
@@ -584,6 +586,14 @@ class MainActivity : Activity() {
             setOnClickListener { confirmReboot() }
         }
         content.addView(reboot, mlp(10))
+
+        val report = tv("📋  إنشاء تقرير وإرساله للواتساب", 15f, Color.parseColor("#0B1220"), true).apply {
+            gravity = Gravity.CENTER
+            background = gradient(14, Color.parseColor("#22C55E"), Color.parseColor("#16A34A"))
+            setPadding(dp(8), dp(14), dp(8), dp(14))
+            setOnClickListener { confirmReport() }
+        }
+        content.addView(report, mlp(10))
     }
 
     private fun buildFab(frame: FrameLayout) {
@@ -643,6 +653,7 @@ class MainActivity : Activity() {
     }
 
     private fun show(r: OntReading, p: Profile) {
+        lastReading = r
         errorCard.visibility = View.GONE
         setConnected(true, p)
 
@@ -1060,6 +1071,165 @@ class MainActivity : Activity() {
                 ui.post { setBusy(false) }
             }
         }.start()
+    }
+
+    // ---------------- التقرير ----------------
+    private fun confirmReport() {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("إنشاء تقرير")
+            .setMessage("سيجمع التطبيق قراءات الجهاز واسم المستخدم ويقيس سرعة الإنترنت (حوالي 20 ثانية)، ثم يفتح واتساب والتقرير جاهز لإرساله.\n\nملاحظة: لا يمكن لأي تطبيق الإرسال التلقائي لكروب واتساب — ستختار الكروب وتضغط إرسال.")
+            .setPositiveButton("ابدأ") { _, _ -> buildAndSendReport() }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    private fun buildAndSendReport() {
+        if (busy) return
+        setBusy(true)
+        tvUpdated.text = "جاري تجهيز التقرير..."
+        val p = clientProfile ?: if (selected in profiles.indices) profiles[selected] else profiles.firstOrNull()
+        Thread {
+            try {
+                Net.bindWifi(this)
+                val c = client?.takeIf { clientProfile == p } ?: HuaweiClient(p!!.host, p.user, p.pass) { h, u, pw -> webLogin(h, u, pw) }
+                val r = c.read()
+                client = c; clientProfile = p; lastReading = r
+                ui.post { show(r, p!!) }
+                // اسم المستخدم من صفحة WAN (منطق الجهاز نفسه)
+                val wan = try { webReadWan(p!!.host, p.user, p.pass) } catch (e: Exception) { null }
+                // قياس السرعة
+                ui.post { tvUpdated.text = "جاري قياس السرعة للتقرير..." }
+                val sp = try { SpeedTest { _, _, _ -> }.run() } catch (e: Exception) { null }
+                val text = buildReportText(r, p!!, wan, sp)
+                ui.post { tvUpdated.text = "التقرير جاهز"; shareToWhatsApp(text) }
+            } catch (e: Exception) {
+                ui.post { showError(friendly(e, p?.host)) }
+            } finally {
+                ui.post { setBusy(false) }
+            }
+        }.start()
+    }
+
+    private fun buildReportText(r: OntReading, p: Profile, wan: Map<String, String>?, sp: SpeedTest.Result?): String {
+        fun line(label: String, value: String?) = "• $label: ${value ?: "—"}"
+        val user = wan?.get("user")?.takeIf { it.isNotBlank() } ?: wan?.get("conn") ?: "—"
+        val online = when {
+            r.ponStatus?.contains("ONLINE", true) == true || r.ponStatus == "O5" -> "متصل ✅"
+            r.rxPower != null -> "متصل ✅"
+            else -> "غير متصل ❌"
+        }
+        val rx = r.rxPower?.let { "$it dBm" }
+        val lanSpeed = r.ports.firstOrNull { it.isUp }?.label ?: "غير متصل"
+        val inet = sp?.let { "⬇ ${String.format(Locale.US, "%.1f", it.downMbps)} / ⬆ ${String.format(Locale.US, "%.1f", it.upMbps)} Mbps (Ping ${String.format(Locale.US, "%.0f", it.pingMs)}ms)" }
+        val sb = StringBuilder()
+        sb.append("📋 تقرير فحص ONT\n")
+        sb.append("🏢 مكتب المبرمج لخدمات الإنترنت\n")
+        sb.append("—————————————\n")
+        sb.append(line("اسم المستخدم", user)).append("\n")
+        sb.append(line("حالة الاتصال", online)).append("\n")
+        sb.append(line("قوة الإشارة RX", rx)).append("\n")
+        sb.append(line("البور المرسل TX", r.txPower?.let { "$it dBm" })).append("\n")
+        sb.append(line("درجة الحرارة", r.temperature?.let { "$it °C" })).append("\n")
+        sb.append(line("المعالج CPU", r.cpu?.let { if (it.contains("%")) it else "$it%" })).append("\n")
+        sb.append(line("الذاكرة RAM", r.memory?.let { if (it.contains("%")) it else "$it%" })).append("\n")
+        sb.append(line("مدة التشغيل", formatUptime(r.uptime))).append("\n")
+        sb.append(line("سرعة منفذ الإيثر", lanSpeed)).append("\n")
+        sb.append(line("سرعة الإنترنت", inet)).append("\n")
+        sb.append("—————————————\n")
+        sb.append(line("الموديل", r.model)).append("\n")
+        sb.append(line("الرقم التسلسلي", r.serial)).append("\n")
+        sb.append("🕐 ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())}")
+        return sb.toString()
+    }
+
+    private fun shareToWhatsApp(text: String) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(8), dp(18), 0) }
+        box.addView(TextView(this).apply { setText(text); setTextColor(Color.DKGRAY); textSize = 12.5f; setTextIsSelectable(true) })
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("التقرير جاهز")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("إرسال عبر واتساب") { _, _ ->
+                val i = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text); setPackage("com.whatsapp")
+                }
+                try {
+                    startActivity(i)
+                    Toast.makeText(this, "اختر الكروب واضغط إرسال", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text) })
+                    } catch (e2: Exception) {
+                        Toast.makeText(this, "واتساب غير مثبت", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            .setNeutralButton("فتح الكروب") { _, _ ->
+                try { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(WA_GROUP))) } catch (e: Exception) {}
+            }
+            .setNegativeButton("نسخ") { _, _ ->
+                val cb = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cb.setPrimaryClip(android.content.ClipData.newPlainText("report", text))
+                Toast.makeText(this, "تم نسخ التقرير", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    /** يفتح صفحة WAN في WebView خفي، يسجّل الدخول، يفتح الاتصال، ويقرأ اسم المستخدم والفيلان والوضع */
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun webReadWan(host: String, user: String, pass: String): Map<String, String> {
+        val latch = CountDownLatch(1)
+        val result = HashMap<String, String>()
+        val base = "http://$host/"
+        ui.post {
+            CookieManager.getInstance().setAcceptCookie(true)
+            val wv = WebView(this)
+            wv.settings.javaScriptEnabled = true
+            wv.settings.domStorageEnabled = true
+            var stage = 0 // 0=login page, 1=navigated to wan, 2=done
+            fun finish() { if (latch.count == 0L) return; latch.countDown(); ui.post { try { wv.stopLoading(); wv.destroy() } catch (e: Exception) {} } }
+            val readJs = """
+                (function(){
+                  var row=[...document.querySelectorAll('td')].find(function(x){return /_R_|_B_|VID_?\d+|INTERNET/i.test(x.textContent||'')});
+                  if(row) row.click();
+                  function v(id){var e=document.getElementById(id);return e?e.value:''}
+                  return JSON.stringify({user:v('UserName'),vlan:v('VlanId'),mode:(document.getElementById('WanMode')||{}).value||'',name:row?row.textContent.trim():''});
+                })();
+            """.trimIndent()
+            val loginJs = """
+                (function(){var u=document.getElementById('txt_Username'),p=document.getElementById('txt_Password');
+                if(!u||!p)return 'x';u.value='${user.replace("'","\\'")}';p.value='${pass.replace("'","\\'")}';
+                if(typeof SubmitForm=='function'){SubmitForm();return 's';}return 'n';})();
+            """.trimIndent()
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    view.evaluateJavascript("(document.getElementById('txt_Password')?1:0)") { r ->
+                        if (r.trim('"') == "1") { view.evaluateJavascript(loginJs) {} }
+                        else if (stage == 0) { stage = 1; view.loadUrl(base + "html/bbsp/wan/wan.asp") }
+                        else if (stage == 1) {
+                            stage = 2
+                            ui.postDelayed({
+                                view.evaluateJavascript(readJs) { }
+                                ui.postDelayed({
+                                    view.evaluateJavascript(readJs) { json ->
+                                        try {
+                                            val s = json.trim('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                                            Regex(""""user":"([^"]*)"""").find(s)?.let { result["user"] = OntParser.decodeJs(it.groupValues[1]) }
+                                            Regex(""""vlan":"([^"]*)"""").find(s)?.let { result["vlan"] = it.groupValues[1] }
+                                            Regex(""""mode":"([^"]*)"""").find(s)?.let { result["mode"] = it.groupValues[1] }
+                                            Regex(""""name":"([^"]*)"""").find(s)?.let { result["conn"] = OntParser.decodeJs(it.groupValues[1]) }
+                                        } catch (e: Exception) {}
+                                        finish()
+                                    }
+                                }, 1200)
+                            }, 900)
+                        }
+                    }
+                }
+            }
+            wv.loadUrl(base)
+        }
+        latch.await(30, TimeUnit.SECONDS)
+        return result
     }
 
     /** يحفظ التشخيص الكامل كملف .txt عبر نافذة النظام (لا يُقطع مثل نص المشاركة) */
