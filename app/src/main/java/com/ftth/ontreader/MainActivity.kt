@@ -1189,10 +1189,14 @@ class MainActivity : Activity() {
             fun finish() { if (latch.count == 0L) return; latch.countDown(); ui.post { try { wv.stopLoading(); wv.destroy() } catch (e: Exception) {} } }
             val readJs = """
                 (function(){
-                  var row=[...document.querySelectorAll('td')].find(function(x){return /_R_|_B_|VID_?\d+|INTERNET/i.test(x.textContent||'')});
+                  var tds=[...document.querySelectorAll('td')];
+                  // صف الاتصال = خلية نصّها قصير ويطابق اسم اتصال WAN (ليس رأس الجدول)
+                  var row=tds.find(function(x){var t=(x.textContent||'').trim();return t.length<42 && /^\d+_.*VID/i.test(t);})
+                        || tds.find(function(x){var t=(x.textContent||'').trim();return t.length<42 && (/_R_|_B_/i.test(t)) && !/Connection|Protocol/i.test(t);});
+                  var name=row?row.textContent.trim():'';
                   if(row) row.click();
                   function v(id){var e=document.getElementById(id);return e?e.value:''}
-                  return JSON.stringify({user:v('UserName'),vlan:v('VlanId'),mode:(document.getElementById('WanMode')||{}).value||'',name:row?row.textContent.trim():''});
+                  return JSON.stringify({user:v('UserName'),vlan:v('VlanId'),mode:(document.getElementById('WanMode')||{}).value||'',name:name});
                 })();
             """.trimIndent()
             val loginJs = """
