@@ -38,8 +38,8 @@ data class PortInfo(
             }
             val n = raw.toIntOrNull() ?: Regex("""\d+""").find(raw)?.value?.toIntOrNull() ?: return null
             // رقم ≥ 10 يعني أنها Mbps فعلية (10/100/1000/2500...)
-            // رقم 0..9 يعني رمز سرعة من هواوي: 0=10، 1=100، 2=1000، 3=2500، 4=10000
-            return if (n >= 10) n else intArrayOf(10, 100, 1000, 2500, 10000).getOrElse(n) { n }
+            // رقم 0..9 يعني رمز سرعة من هواوي: 0=10، 1=100، 2=1000، 3=10000 (مؤكد من جهاز حقيقي)
+            return if (n >= 10) n else intArrayOf(10, 100, 1000, 10000, 40000).getOrElse(n) { n }
         }
 
     /** GE / FE / ... */
@@ -176,20 +176,32 @@ object OntParser {
         return t
     }
 
+    private fun isBlank(c: String) = c == "--" || c == "---" || c == "-" || c.all { it == '-' }
+
     private fun findField(objs: List<JsObj>, name: Regex, numeric: Boolean = true, exclude: Regex? = null): String? {
         for (o in objs) for ((k, v) in o.fields) {
             if (name.containsMatchIn(k) && (exclude == null || !exclude.containsMatchIn(k))) {
                 val c = clean(v) ?: continue
-                if (!numeric || NUM.matches(c) || c.contains("--")) return c
-                if (numeric && Regex("""-?\d+(\.\d+)?""").containsMatchIn(c)) return c
+                if (isBlank(c)) continue // تخطَّ القيم الفارغة مثل "--"
+                if (!numeric) return c
+                if (NUM.matches(c)) return c
+                if (Regex("""-?\d+(\.\d+)?""").containsMatchIn(c)) return c
             }
         }
         return null
     }
 
-    /** بحث نصي احتياطي: var xxx = '12'  أو  xxx: "12" */
+    /** قراءة حقل باسم مطابق تماماً من كائن محدّد (يتخطى "--") */
+    private fun from(o: JsObj?, vararg names: String): String? {
+        if (o == null) return null
+        for (n in names) for ((k, v) in o.fields)
+            if (k.equals(n, true)) { val c = clean(v); if (c != null && !isBlank(c)) return c }
+        return null
+    }
+
+    /** بحث نصي احتياطي: يطابق اسم متغيّر يبدأ بالنمط (لا في منتصف اسم آخر) */
     private fun findVar(html: String, namePattern: String): String? {
-        val r = Regex("""(?i)\b\w*(?:$namePattern)\w*\s*[=:]\s*['"]?\s*(-?\d+(?:\.\d+)?)""")
+        val r = Regex("""(?i)(?:^|[^\w])(?:$namePattern)\w*\s*[=:]\s*['"]?\s*(-?\d+(?:\.\d+)?)""")
         return r.find(html)?.groupValues?.get(1)
     }
 
@@ -202,52 +214,46 @@ object OntParser {
     // ---------------- الصفحة الضوئية ----------------
     fun parseOptical(html: String, r: OntReading) {
         val objs = extractObjects(html)
-        r.rxPower = r.rxPower
-            ?: findField(objs, Regex("(?i)(rev|rx|recv|receiv).*(power|optic)|^rxpower$|rxopticalpower"))
-            ?: findVar(html, "rev\\w*power|rx\\w*power|RxOptical")
-            ?: findByLabel(html, "(?:Rx|Receive[d]?)\\s*Optical\\s*Power")
+        // كائن إشارة الـ ONT نفسه (لا كائن الـ OLT): يحوي revOpticPower/transOpticPower أو (temperature و voltage)
+        val optic = objs.firstOrNull { o ->
+            o.fields.keys.any { it.equals("revOpticPower", true) || it.equals("transOpticPower", true) } ||
+                (o.fields.keys.any { it.contains("temperature", true) } && o.fields.keys.any { it.contains("voltage", true) })
+        }
         r.txPower = r.txPower
-            ?: findField(objs, Regex("(?i)(trans|tx|send).*(power|optic)|^txpower$"))
-            ?: findVar(html, "trans\\w*power|tx\\w*power|TxOptical")
+            ?: from(optic, "transOpticPower", "TxOpticalPower", "txpower", "txOpticPower")
+            ?: findField(objs, Regex("(?i)^transopticpower$|(trans|tx|send).*(power|optic)|^txpower$"))
+            ?: findVar(html, "transopticpower|txopticpower|txpower")
             ?: findByLabel(html, "(?:Tx|Transmit(?:ted)?)\\s*Optical\\s*Power")
+        r.rxPower = r.rxPower
+            ?: from(optic, "revOpticPower", "RxOpticalPower", "rxpower", "rxOpticPower")
+            ?: findField(objs, Regex("(?i)^revopticpower$|(rev|rx|recv|receiv).*(power|optic)|^rxpower$"))
+            ?: findVar(html, "revopticpower|rxopticpower|rxpower")
+            ?: findByLabel(html, "(?:Rx|Receive[d]?)\\s*Optical\\s*Power")
         r.temperature = r.temperature
+            ?: from(optic, "temperature", "temp")
             ?: findField(objs, Regex("(?i)temp"))
             ?: findVar(html, "temperature|temprature|temper")
             ?: findByLabel(html, "(?:Working|Optical\\s*Module)?\\s*Temperature")
         r.voltage = r.voltage
+            ?: from(optic, "voltage", "volt")
             ?: findField(objs, Regex("(?i)volt"))
             ?: findVar(html, "voltage")
         r.bias = r.bias
+            ?: from(optic, "bias", "current")
             ?: findField(objs, Regex("(?i)bias|current"))
             ?: findVar(html, "bias")
-
-        // احتياطي لـ TX: داخل كائن الإشارة، اختر حقل قدرة بالـ dBm غير RX
-        if (r.txPower == null) {
-            val rxVal = r.rxPower
-            outer@ for (o in objs) {
-                if (o.fields.keys.none { Regex("(?i)optic|power|temp|volt|bias|signal|level").containsMatchIn(it) }) continue
-                for ((k, v) in o.fields) {
-                    if (Regex("(?i)rx|rev|recv|receiv|temp|volt|bias|current|domain|vendor|status|wave|dist|serial|mode").containsMatchIn(k)) continue
-                    if (!Regex("(?i)power|optic|level|tx|trans|send|launch|signal").containsMatchIn(k)) continue
-                    val c = clean(v) ?: continue
-                    if (c == rxVal) continue
-                    val d = c.toDoubleOrNull() ?: continue
-                    if (d in -50.0..20.0) { r.txPower = c; break@outer }
-                }
-            }
-        }
     }
 
     // ---------------- صفحة معلومات الجهاز ----------------
     fun parseDevice(html: String, r: OntReading) {
         val objs = extractObjects(html)
         r.cpu = r.cpu
-            ?: findField(objs, Regex("(?i)cpu"))
-            ?: findVar(html, "cpu")
+            ?: findField(objs, Regex("(?i)^cpu(used|usage|rate)?$"))
+            ?: findVar(html, "cpuused|cpuusage|cpurate|cpu")
             ?: findByLabel(html, "CPU\\s*(?:Usage|Usage\\s*Rate|Used|Occupancy)")
         r.memory = r.memory
-            ?: findField(objs, Regex("(?i)mem"))
-            ?: findVar(html, "mem\\w*(?:used|usage|rate|occup)")
+            ?: findField(objs, Regex("(?i)^mem(ory)?(used|usage|rate)?$"))
+            ?: findVar(html, "memused|memoryused|memusage|memrate|memory|mem")
             ?: findByLabel(html, "Memory\\s*(?:Usage|Usage\\s*Rate|Used|Occupancy)")
         r.model = r.model ?: findField(objs, Regex("(?i)modelname|devtype|model|productclass"), numeric = false)
         r.serial = r.serial ?: findField(objs, Regex("(?i)serial|^sn$"), numeric = false)
@@ -277,7 +283,7 @@ object OntParser {
                 val kl = k.lowercase()
                 if (speed == null && (kl.contains("speed") || kl.contains("bitrate") || kl == "rate") && !kl.contains("max")) speed = v
                 else if (status == null && (kl.contains("status") || kl.contains("link")) && !kl.contains("speed")) status = v
-                else if (duplex == null && kl.contains("duplex")) duplex = v
+                else if (duplex == null && (kl.contains("duplex") || kl == "mode")) duplex = v
                 else if (type == null && (kl.contains("porttype") || kl == "type") && Regex("(?i)GE|FE").containsMatchIn(v)) type = v
             }
             // عند غياب أسماء المعاملات نعتمد على شكل القيم
@@ -285,16 +291,24 @@ object OntParser {
             if (speed == null) speed = vals.firstOrNull { SPEED_VAL.matches(it) }
             if (status == null) status = vals.firstOrNull { STATUS_VAL.matches(it) }
             if (duplex == null) duplex = vals.firstOrNull { DUPLEX_VAL.matches(it) }
+            duplex = normDuplex(duplex)
 
-            val looksLikePort = (speed != null && (status != null || duplex != null)) ||
-                    (status != null && duplex != null) ||
-                    o.fields.values.any { it.contains("LANEthernetInterfaceConfig", true) || it.contains("EthernetInterface", true) }
+            // منفذ حقيقي يجب أن يحمل قيمة سرعة أو حالة أو Duplex (يستبعد صف WAN الفارغ)
+            val hasVal = speed != null || status != null || duplex != null
             val looksLikeStats = o.fields.keys.any { Regex("(?i)packet|bytes|frame|err").containsMatchIn(it) } && speed == null
-            if (looksLikePort && !looksLikeStats) {
+            val isWan = o.fields.values.any { it.contains("WANEthernetInterface", true) || it.contains("WANDevice", true) }
+            if (hasVal && !looksLikeStats && !isWan) {
                 ports.add(PortInfo(ports.size + 1, status, speed, duplex, type))
             }
         }
         if (ports.isNotEmpty()) r.ports = ports
+    }
+
+    private fun normDuplex(d: String?): String? = when {
+        d == null -> null
+        d == "1" || d.equals("full", true) || d.contains("full", true) -> "Full"
+        d == "0" || d.equals("half", true) || d.contains("half", true) -> "Half"
+        else -> d
     }
 
     fun parseAll(pages: Map<String, String>): OntReading {
