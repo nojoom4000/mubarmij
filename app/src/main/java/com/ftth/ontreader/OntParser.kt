@@ -284,7 +284,8 @@ object OntParser {
         r.serial = r.serial ?: findField(objs, Regex("(?i)serial|^sn$"), numeric = false)
         r.software = r.software ?: findField(objs, Regex("(?i)softwarever|swver|software"), numeric = false)
         r.uptime = r.uptime ?: findField(objs, Regex("(?i)uptime|runtime|runningtime"), numeric = false)
-            ?: findVar(html, "uptime")
+            ?: findVar(html, "uptime")?.takeIf { it.toLongOrNull() != null && it != "0" }
+            ?: uptimeFromSystemTime(html)
         if (r.temperature == null) {
             r.temperature = findField(objs, Regex("(?i)temp")) ?: findVar(html, "temperature|temprature")
         }
@@ -302,6 +303,27 @@ object OntParser {
         r.ponMode = r.ponMode ?: Regex("""(?i)ontPonMode\s*=\s*['"](\w+)['"]""").find(html)?.groupValues?.get(1)
         r.ponStatus = r.ponStatus
             ?: Regex("""(?i)['"](O[1-7]|ONLINE|OFFLINE)['"]""").find(html)?.groupValues?.get(1)
+    }
+
+    /**
+     * عند عدم وجود uptime مباشر: ساعة الجهاز تبدأ من 1970 عند الإقلاع (بلا NTP)،
+     * فوقت النظام يساوي مدة التشغيل. نحسب الثواني منذ 1970-01-01T00:00:00 UTC.
+     * مثال: "1970-01-01 08:54:01+08:00" → 8*3600+54*60+1 - 8*3600 = 3241 ثانية.
+     */
+    private fun uptimeFromSystemTime(html: String): String? {
+        val m = Regex("""systemdsttime\s*=\s*['"](\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\s*([+-]\d{2}):?(\d{2})?""").find(html) ?: return null
+        val (y, mo, d, hh, mm, ss, offH) = m.destructured
+        val offM = m.groupValues.getOrNull(8)?.toIntOrNull() ?: 0
+        if (y.toInt() >= 2000) return null // ساعة مضبوطة عبر NTP → ليست مدة تشغيل
+        // أيام منذ بداية 1970 (أشهر 01 أيام قليلة فقط عادةً)
+        val daysInMonth = intArrayOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+        var days = (d.toInt() - 1)
+        for (i in 0 until (mo.toInt() - 1)) days += daysInMonth[i]
+        days += (y.toInt() - 1970) * 365
+        var secs = days * 86400L + hh.toInt() * 3600L + mm.toInt() * 60L + ss.toInt()
+        val offTotal = (if (offH.startsWith("-")) -1 else 1) * (Math.abs(offH.toInt()) * 3600L + offM * 60L)
+        secs -= offTotal
+        return if (secs in 1..(400L * 86400)) secs.toString() else null
     }
 
     // ---------------- الأجهزة المتصلة ----------------
