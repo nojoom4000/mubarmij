@@ -149,6 +149,7 @@ class MainActivity : Activity() {
         val frame = FrameLayout(this).apply { setBackgroundColor(BG) }
         val outer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         frame.addView(outer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(frame)
 
         // الشريط العلوي الثابت: العنوان + الملفات + التبويبات
         topBar = LinearLayout(this).apply {
