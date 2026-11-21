@@ -292,10 +292,11 @@ object OntParser {
         }
         // نوع دعم PON من الوصف: "GPON/EPON Terminal" / "GPON Terminal" / "EPON Terminal"
         val desc = findField(objs, Regex("(?i)description|manufactureinfo|devtype"), numeric = false) ?: html
+        val x = Regex("(?i)xpon").containsMatchIn(desc) // XPON = يدعم GPON و EPON معاً
         val g = Regex("(?i)gpon").containsMatchIn(desc)
         val e = Regex("(?i)epon").containsMatchIn(desc)
         r.ponSupport = r.ponSupport ?: when {
-            g && e -> "GPON/EPON"
+            x || (g && e) -> "GPON/EPON"
             g -> "GPON"
             e -> "EPON"
             else -> null
@@ -313,17 +314,19 @@ object OntParser {
      */
     private fun uptimeFromSystemTime(html: String): String? {
         val m = Regex("""systemdsttime\s*=\s*['"](\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\s*([+-]\d{2}):?(\d{2})?""").find(html) ?: return null
-        val (y, mo, d, hh, mm, ss, offH) = m.destructured
-        val offM = m.groupValues.getOrNull(8)?.toIntOrNull() ?: 0
-        if (y.toInt() >= 2000) return null // ساعة مضبوطة عبر NTP → ليست مدة تشغيل
-        // أيام منذ بداية 1970 (أشهر 01 أيام قليلة فقط عادةً)
+        val y = m.groupValues[1].toInt(); val mo = m.groupValues[2].toInt(); val d = m.groupValues[3].toInt()
+        val hh = m.groupValues[4].toInt(); val mm = m.groupValues[5].toInt(); val ss = m.groupValues[6].toInt()
+        if (y >= 2000) return null // ساعة مضبوطة عبر NTP → ليست مدة تشغيل، وليست قاعدة إقلاع (1970/1981…)
+        // الثواني منذ 1 يناير من السنة المعروضة 00:00:00 (الجهاز يبدأ عدّه من هذه القاعدة عند الإقلاع)
         val daysInMonth = intArrayOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-        var days = (d.toInt() - 1)
-        for (i in 0 until (mo.toInt() - 1)) days += daysInMonth[i]
-        days += (y.toInt() - 1970) * 365
-        var secs = days * 86400L + hh.toInt() * 3600L + mm.toInt() * 60L + ss.toInt()
-        val offTotal = (if (offH.startsWith("-")) -1 else 1) * (Math.abs(offH.toInt()) * 3600L + offM * 60L)
-        secs -= offTotal
+        var days = (d - 1)
+        for (i in 0 until (mo - 1)) days += daysInMonth[i]
+        val e = days * 86400L + hh * 3600L + mm * 60L + ss
+        // بعض الموديلات تضيف إزاحة المنطقة على عدّاد يبدأ من UTC؛ وبعضها لا.
+        // نطرح الإزاحة فقط إذا بقيت النتيجة غير سالبة، وإلا نستخدم القيمة كما هي.
+        val offSign = if (m.groupValues[7].startsWith("-")) -1 else 1
+        val offSec = offSign * (Math.abs(m.groupValues[7].toInt()) * 3600L + (m.groupValues.getOrNull(8)?.toIntOrNull() ?: 0) * 60L)
+        val secs = if (e - offSec >= 60) e - offSec else e
         return if (secs in 1..(400L * 86400)) secs.toString() else null
     }
 
