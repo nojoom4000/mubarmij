@@ -7,7 +7,8 @@
 
     <application
         android:label="قارئ ONT هواوي"
-        android:icon="@android:drawable/ic_menu_info_details"
+        android:icon="@drawable/app_icon"
+        android:roundIcon="@drawable/app_icon"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">

@@ -63,6 +63,9 @@ class MainActivity : Activity() {
     private lateinit var ponCard: LinearLayout
     private lateinit var tvPon: TextView
     private lateinit var tvPonSub: TextView
+    private lateinit var ponLinkCard: LinearLayout
+    private lateinit var tvPonLink: TextView
+    private lateinit var tvPonLinkSub: TextView
     private lateinit var devicesBox: LinearLayout
     private lateinit var tvDevicesCount: TextView
     private lateinit var speedBox: LinearLayout
@@ -289,6 +292,26 @@ class MainActivity : Activity() {
     }
 
     private fun buildStatusTop() {
+        // كارت حالة البون (PON) — داخل البرنامج فقط
+        ponLinkCard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(CARD, 20, OFF, 2)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        val dotWrap = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        val bigDot = TextView(this).apply { text = "●"; textSize = 30f; setTextColor(OFF) }
+        dotWrap.addView(bigDot)
+        ponLinkCard.addView(dotWrap, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(14) })
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        tvPonLink = tv("حالة البون غير معروفة", 18f, TEXT, true)
+        tvPonLinkSub = tv("اضغط تحديث لفحص الفايبر", 12f, MUTED)
+        col.addView(tvPonLink); col.addView(tvPonLinkSub)
+        ponLinkCard.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        ponLinkCard.tag = bigDot
+        content.addView(ponLinkCard, mlp(4))
+        animCards.add(ponLinkCard)
+
         // صف التحديث التلقائي
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         row.addView(tv("اضغط مطولاً على ملف لتعديله", 11f, MUTED), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -382,6 +405,8 @@ class MainActivity : Activity() {
                 val c = client?.takeIf { clientProfile == p } ?: HuaweiClient(p!!.host, p.user, p.pass) { h, u, pw -> webLogin(h, u, pw) }
                 val list = c.fetchDevices()
                 client = c; clientProfile = p; lastDump = c.dump()
+                // تحديد الشركة المصنّعة لكل جهاز (قائمة مضمّنة + أونلاين احتياطي) على خيط العمل
+                list.forEach { d -> try { VendorDB.resolve(d.mac) } catch (e: Exception) {} }
                 ui.post { showDevices(list) }
             } catch (e: Exception) {
                 ui.post { tvDevicesCount.text = "--"; devicesBox.removeAllViews(); devicesBox.addView(tv(friendly(e, p?.host), 13f, BAD)) }
@@ -398,7 +423,9 @@ class MainActivity : Activity() {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             row.addView(tv(if (d.isWireless) "📶" else "🔌", 18f, TEXT), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(10) })
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            col.addView(tv(d.host?.takeIf { it.isNotBlank() } ?: "جهاز غير معروف", 15f, TEXT, true))
+            val vendor = VendorDB.cached(d.mac)
+            col.addView(tv(d.host?.takeIf { it.isNotBlank() } ?: vendor ?: "جهاز غير معروف", 15f, TEXT, true))
+            if (vendor != null) col.addView(tv("الشركة: $vendor", 12f, ACCENT2, true))
             col.addView(tv("IP: ${d.ip ?: "--"}", 12f, MUTED).apply { textDirection = View.TEXT_DIRECTION_LTR })
             col.addView(tv("MAC: ${d.mac ?: "--"}", 12f, MUTED).apply { textDirection = View.TEXT_DIRECTION_LTR })
             row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -656,6 +683,22 @@ class MainActivity : Activity() {
         lastReading = r
         errorCard.visibility = View.GONE
         setConnected(true, p)
+
+        // كارت حالة البون (LOS / متصل) — داخل البرنامج فقط
+        run {
+            val rxv = num(r.rxPower)
+            val registered = r.ponStatus?.let { it.contains("ONLINE", true) || it.uppercase() == "O5" } == true
+            val offline = r.ponStatus?.let { it.contains("OFFLINE", true) || it.uppercase() in setOf("O1","O2","O3","O4","O6","O7") } == true
+            val (col, title, sub) = when {
+                rxv == null || offline -> Triple(BAD, "LOS — لا يوجد ضوء", "قطع أو فصل في الفايبر — افحص الكيبل والكونكتر")
+                registered || rxv > -30 -> Triple(GOOD, "البون متصل", "الفايبر سليم والإشارة واصلة" + (r.rxPower?.let { " ($it dBm)" } ?: ""))
+                else -> Triple(WARN, "ضوء ضعيف", "الإشارة واصلة لكنها ضعيفة — افحص الوصلات")
+            }
+            tvPonLink.text = title; tvPonLink.setTextColor(col)
+            tvPonLinkSub.text = sub
+            ponLinkCard.background = rounded(CARD, 20, col, 2)
+            (ponLinkCard.tag as? TextView)?.setTextColor(col)
+        }
 
         // نوع الشبكة PON
         val sup = r.ponSupport
