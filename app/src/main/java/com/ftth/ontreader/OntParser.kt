@@ -284,7 +284,7 @@ object OntParser {
         r.serial = r.serial ?: findField(objs, Regex("(?i)serial|^sn$"), numeric = false)
         r.software = r.software ?: findField(objs, Regex("(?i)softwarever|swver|software"), numeric = false)
         r.uptime = r.uptime
-            ?: findVar(html, "sysuptime|deviceuptime|runningtime|runtime|devuptime|uptime")?.takeIf { it.toLongOrNull() != null && it != "0" }
+            ?: findVar(html, "dev_?uptime|sys_?uptime|device_?uptime|running_?time|run_?time|up_?time")?.takeIf { it.toLongOrNull() != null && it != "0" }
             ?: uptimeFromSystemTime(html)
             ?: findField(objs, Regex("(?i)uptime|runtime|runningtime"), numeric = false)?.takeIf { it != "0" }
         if (r.temperature == null) {

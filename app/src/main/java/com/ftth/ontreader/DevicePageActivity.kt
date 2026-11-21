@@ -101,7 +101,8 @@ class DevicePageActivity : Activity() {
               if(!u||!p) return 'nologin';
               u.value=${jsStr(user)}; p.value=${jsStr(pass)};
               if(typeof SubmitForm=='function'){SubmitForm();return 'submit';}
-              var b=document.getElementById('loginbutton')||document.getElementById('button')||document.querySelector('input[type=button],input[type=submit],button');
+              var b=document.getElementById('loginbutton')||document.getElementById('button')||document.getElementById('btnLogin')||document.getElementById('loginBtn')||document.querySelector('input[type=button],input[type=submit],button');
+              if(!b){var all=[...document.querySelectorAll('button,input[type=button],input[type=submit],a,div,span')];b=all.find(function(x){return /log\s*in|login|دخول|تسجيل/i.test((x.textContent||x.value||''))&&(x.offsetWidth||x.offsetHeight);});}
               if(b){b.click();return 'click';}
               return 'nobtn';
             })();

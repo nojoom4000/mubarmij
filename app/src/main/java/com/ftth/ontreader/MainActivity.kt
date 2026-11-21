@@ -878,9 +878,10 @@ class MainActivity : Activity() {
               var p=document.getElementById('txt_Password')||document.querySelector('input[type=password]');
               if(!u||!p) return 'nofields';
               u.value=${jsStr(user)}; p.value=${jsStr(pass)};
-              var b=document.getElementById('loginbutton')||document.getElementById('button')||document.getElementById('btnLogin')||document.querySelector('[onclick*=SubmitForm]')||document.querySelector('input[type=button],input[type=submit],button');
-              if(b){b.click();return 'click';}
               if(typeof SubmitForm=='function'){SubmitForm();return 'submit';}
+              var b=document.getElementById('loginbutton')||document.getElementById('button')||document.getElementById('btnLogin')||document.getElementById('loginBtn')||document.querySelector('[onclick*=SubmitForm]')||document.querySelector('input[type=button],input[type=submit],button');
+              if(!b){var all=[...document.querySelectorAll('button,input[type=button],input[type=submit],a,div,span')];b=all.find(function(x){return /log\s*in|login|دخول|تسجيل/i.test((x.textContent||x.value||''))&&(x.offsetWidth||x.offsetHeight);});}
+              if(b){b.click();return 'click';}
               return 'nobutton';
             })();
         """.trimIndent()
@@ -1209,7 +1210,10 @@ class MainActivity : Activity() {
             val loginJs = """
                 (function(){var u=document.getElementById('txt_Username'),p=document.getElementById('txt_Password');
                 if(!u||!p)return 'x';u.value='${user.replace("'","\\'")}';p.value='${pass.replace("'","\\'")}';
-                if(typeof SubmitForm=='function'){SubmitForm();return 's';}return 'n';})();
+                if(typeof SubmitForm=='function'){SubmitForm();return 's';}
+                var b=document.getElementById('loginbutton')||document.getElementById('btnLogin')||document.getElementById('loginBtn')||document.getElementById('button');
+                if(!b){var all=[...document.querySelectorAll('button,input[type=button],input[type=submit],a,div,span')];b=all.find(function(x){return /log\s*in|login|دخول|تسجيل/i.test((x.textContent||x.value||''))&&(x.offsetWidth||x.offsetHeight);});}
+                if(b){b.click();return 'c';}return 'n';})();
             """.trimIndent()
 
             fun readAndMaybeRetry(view: WebView) {
